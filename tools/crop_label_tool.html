@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Crop label tool</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css">
+<style>
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    display: flex; flex-direction: column;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    color: #17261f; background: #17261f;
+  }
+  #top { display: flex; gap: 8px; padding: 8px; background: #17261f; }
+  .cls {
+    flex: 1; border: 3px solid transparent; border-radius: 10px;
+    padding: 10px 6px; font: inherit; font-size: 17px; font-weight: 700;
+    line-height: 1.2; cursor: pointer;
+  }
+  .cls small { display: block; margin-top: 3px; font-size: 13px; font-weight: 500; }
+  .cls.active { border-color: #ffffff; }
+  #paddyBtn  { background: #2e8b57; color: #ffffff; }
+  #bananaBtn { background: #ffd700; color: #2b2400; }
+  #otherBtn  { background: #cfd4d1; color: #17261f; }
+  #mapwrap { position: relative; flex: 1; min-height: 0; }
+  #map { position: absolute; inset: 0; }
+  #guide {
+    display: none; position: absolute; z-index: 1000; top: 10px; left: 10px; right: 10px;
+    max-height: calc(100% - 20px); overflow: auto;
+    background: #ffffff; border-radius: 10px; padding: 14px 16px;
+    box-shadow: 0 4px 18px rgba(0, 0, 0, 0.35); font-size: 15px; line-height: 1.45;
+  }
+  #guide h2 { margin: 0 0 8px; font-size: 17px; }
+  #guide p { margin: 0 0 8px; }
+  #guide ul { margin: 0 0 8px; padding-left: 20px; }
+  #bar {
+    display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
+    padding: 8px; background: #eef2ef;
+  }
+  #bar button, .filebtn {
+    border: 1px solid #9aa8a0; background: #ffffff; color: #17261f;
+    border-radius: 8px; padding: 9px 12px; font: inherit; font-size: 14px; cursor: pointer;
+  }
+  #bar button.primary { background: #17261f; color: #ffffff; border-color: #17261f; font-weight: 600; }
+  .filebtn input { display: none; }
+  #status { margin-left: auto; font-size: 13px; color: #3d5247; }
+  .leaflet-container { background: #1b2a22; }
+  #warn {
+    display: none; position: absolute; z-index: 1100; left: 10px; right: 10px; bottom: 12px;
+    background: #b3261e; color: #ffffff; border-radius: 10px; padding: 12px 14px;
+    font-size: 15px; line-height: 1.4;
+  }
+</style>
+</head>
+<body>
+
+<div id="top">
+  <button class="cls" id="paddyBtn"></button>
+  <button class="cls" id="bananaBtn"></button>
+  <button class="cls" id="otherBtn"></button>
+</div>
+
+<div id="mapwrap">
+  <div id="map"></div>
+  <div id="warn">The satellite picture is not loading, so you cannot see the fields. Download this file, then open it from your Downloads folder in Chrome or Safari, with internet on. It does not work inside a chat app preview.</div>
+  <div id="guide">
+    <h2>How to decide</h2>
+    <p><b>Paddy:</b> a flat rectangle with thin ridges around it. It may be flooded, bright green, or tan after harvest.</p>
+    <p><b>Banana:</b> dark green, rough-looking, planted in rows, and green all year.</p>
+    <p><b>Other:</b> coconut groves, houses, river, bare land. Label a few coconut spots on purpose, so the model learns they are not banana.</p>
+    <ul>
+      <li>Tap the middle of a plot, away from its edges.</li>
+      <li>Not sure? Skip it. A wrong label hurts more than a missing one.</li>
+      <li>Spread your spots across both taluks. Do not cluster them in one corner.</li>
+      <li>This picture is one date. Fields change through the year, so label only the clear cases.</li>
+      <li>Tap a dot to delete it. Press Z (or Undo) to remove the last one.</li>
+      <li>The picture is only for you to look at. The final map is built from Sentinel data.</li>
+    </ul>
+    <button id="closeGuide" class="cls" style="background:#17261f;color:#fff;flex:none;width:auto;padding:8px 16px;font-size:15px">Close</button>
+  </div>
+</div>
+
+<div id="bar">
+  <button id="undoBtn">Undo</button>
+  <button id="guideBtn">How to decide</button>
+  <button id="gotoA">Ambasamudram</button>
+  <button id="gotoC">Cheranmahadevi</button>
+  <button id="dlBtn" class="primary">Download labels.csv</button>
+  <button id="copyBtn">Copy CSV</button>
+  <label class="filebtn">Load CSV<input type="file" id="fileIn" accept=".csv,text/csv"></label>
+  <span id="status"></span>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
+<script>
+  // Targets: training (40 / 40 / 30) plus testing (15 each).
+  var CLASSES = {
+    paddy:  { label: 'Paddy',  color: '#2e8b57', target: 55, btn: 'paddyBtn' },
+    banana: { label: 'Banana', color: '#ffd700', target: 55, btn: 'bananaBtn' },
+    other:  { label: 'Other',  color: '#cfd4d1', target: 45, btn: 'otherBtn' }
+  };
+  var current = 'paddy';
+  var points = [];
+  var statusTimer = null;
+
+  var map = L.map('map', { zoomControl: true }).setView([8.70, 77.51], 12);
+
+  var sat = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+    maxNativeZoom: 18, maxZoom: 20, attribution: 'Imagery &copy; Esri and contributors'
+  }).addTo(map);
+
+  // Warn clearly if the satellite pictures cannot load (for example inside a chat app preview).
+  var tilesOk = 0, tilesFailed = 0;
+  var warn = document.getElementById('warn');
+  sat.on('tileload', function () { tilesOk++; warn.style.display = 'none'; });
+  sat.on('tileerror', function () {
+    tilesFailed++;
+    if (tilesOk === 0 && tilesFailed >= 3) { warn.style.display = 'block'; }
+  });
+  setTimeout(function () { if (tilesOk === 0) { warn.style.display = 'block'; } }, 6000);
+
+  var names = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}', {
+    maxNativeZoom: 15, maxZoom: 20, opacity: 0.95
+  }).addTo(map);
+  L.control.layers(null, { 'Place names': names }, { collapsed: true }).addTo(map);
+
+  // First-guess study box (same numbers as the notebook). Check it against place names.
+  L.rectangle([[8.66, 77.44], [8.74, 77.58]], { color: '#ffffff', weight: 1, fill: false, dashArray: '5 5' })
+    .addTo(map).bindTooltip('First-guess study box');
+
+  function flash(msg) {
+    var el = document.getElementById('status');
+    el.textContent = msg;
+    clearTimeout(statusTimer);
+    statusTimer = setTimeout(function () { el.textContent = ''; }, 2500);
+  }
+
+  function render() {
+    for (var k in CLASSES) {
+      var n = points.filter(function (p) { return p.crop === k; }).length;
+      var b = document.getElementById(CLASSES[k].btn);
+      b.innerHTML = CLASSES[k].label + '<small>' + n + ' of ' + CLASSES[k].target + '</small>';
+      b.classList.toggle('active', k === current);
+    }
+  }
+
+  function save() {
+    try {
+      var data = points.map(function (p) { return { lat: p.lat, lon: p.lon, crop: p.crop }; });
+      localStorage.setItem('cropLabels', JSON.stringify(data));
+    } catch (e) { /* storage may be blocked; downloading still works */ }
+  }
+
+  function addPoint(lat, lon, crop, quiet) {
+    var c = CLASSES[crop];
+    var marker = L.circleMarker([lat, lon], {
+      radius: 8, color: '#000000', weight: 1.5, fillColor: c.color, fillOpacity: 0.95
+    }).addTo(map);
+    var p = { lat: lat, lon: lon, crop: crop, marker: marker };
+    marker.on('click', function (ev) {
+      L.DomEvent.stopPropagation(ev);
+      removePoint(p);
+    });
+    points.push(p);
+    if (!quiet) { save(); render(); }
+  }
+
+  function removePoint(p) {
+    map.removeLayer(p.marker);
+    points = points.filter(function (q) { return q !== p; });
+    save(); render();
+  }
+
+  function undo() {
+    if (points.length) { removePoint(points[points.length - 1]); }
+  }
+
+  function csvText() {
+    var rows = ['latitude,longitude,crop'];
+    points.forEach(function (p) { rows.push(p.lat.toFixed(6) + ',' + p.lon.toFixed(6) + ',' + p.crop); });
+    return rows.join('\n') + '\n';
+  }
+
+  function download() {
+    if (!points.length) { flash('Nothing to download yet'); return; }
+    var blob = new Blob([csvText()], { type: 'text/csv' });
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'labels.csv';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    flash('Downloaded ' + points.length + ' spots');
+  }
+
+  function copyCsv() {
+    if (!points.length) { flash('Nothing to copy yet'); return; }
+    var text = csvText();
+    function fallback() {
+      var ta = document.createElement('textarea');
+      ta.value = text; document.body.appendChild(ta); ta.select();
+      try { document.execCommand('copy'); flash('Copied ' + points.length + ' spots'); }
+      catch (e) { flash('Copy failed. Use Download instead.'); }
+      ta.remove();
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { flash('Copied ' + points.length + ' spots'); }, fallback);
+    } else { fallback(); }
+  }
+
+  // Choose a class
+  Object.keys(CLASSES).forEach(function (k) {
+    document.getElementById(CLASSES[k].btn).addEventListener('click', function () { current = k; render(); });
+  });
+
+  // Click the map to place a spot
+  map.on('click', function (e) { addPoint(e.latlng.lat, e.latlng.lng, current); });
+
+  document.getElementById('undoBtn').addEventListener('click', undo);
+  document.getElementById('dlBtn').addEventListener('click', download);
+  document.getElementById('copyBtn').addEventListener('click', copyCsv);
+  document.getElementById('gotoA').addEventListener('click', function () { map.setView([8.71, 77.45], 14); });
+  document.getElementById('gotoC').addEventListener('click', function () { map.setView([8.69, 77.57], 14); });
+  document.getElementById('guideBtn').addEventListener('click', function () { document.getElementById('guide').style.display = 'block'; });
+  document.getElementById('closeGuide').addEventListener('click', function () { document.getElementById('guide').style.display = 'none'; });
+
+  document.addEventListener('keydown', function (e) {
+    if (e.key === '1') { current = 'paddy'; render(); }
+    else if (e.key === '2') { current = 'banana'; render(); }
+    else if (e.key === '3') { current = 'other'; render(); }
+    else if (e.key === 'z' || e.key === 'Z') { undo(); }
+  });
+
+  // Load an earlier labels.csv to continue later
+  document.getElementById('fileIn').addEventListener('change', function (e) {
+    var f = e.target.files[0];
+    if (!f) { return; }
+    var r = new FileReader();
+    r.onload = function () {
+      var n = 0;
+      r.result.split(/\r?\n/).slice(1).forEach(function (line) {
+        var parts = line.split(',');
+        var lat = parseFloat(parts[0]), lon = parseFloat(parts[1]);
+        var crop = (parts[2] || '').trim().toLowerCase();
+        if (!isNaN(lat) && !isNaN(lon) && CLASSES[crop]) { addPoint(lat, lon, crop, true); n++; }
+      });
+      save(); render(); flash('Loaded ' + n + ' spots');
+    };
+    r.readAsText(f);
+    e.target.value = '';
+  });
+
+  // Bring back spots saved earlier on this device
+  try {
+    var saved = localStorage.getItem('cropLabels');
+    if (saved) { JSON.parse(saved).forEach(function (p) { if (CLASSES[p.crop]) { addPoint(p.lat, p.lon, p.crop, true); } }); }
+  } catch (e) { /* ignore */ }
+  render();
+</script>
+</body>
+</html>

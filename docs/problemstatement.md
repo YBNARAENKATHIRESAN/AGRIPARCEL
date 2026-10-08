@@ -1,0 +1,1 @@
+Differentiate land parcels and identify/differentiate paddy and banana cultivation in Tirunelveli District, covering Ambasamudram Taluk and Cheranmahadevi Taluk, using openly available satellite imagery. The analysis should cover a minimum study area of 20 sq. km.

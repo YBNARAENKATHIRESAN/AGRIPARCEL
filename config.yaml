@@ -1,0 +1,34 @@
+# AgriParcel AI settings. Claude Code fills these in with you. Scripts read everything from here.
+
+earth_engine:
+  project_id: "map0-511007"                # from the Earth Engine registration
+
+year: 2025                                  # year of satellite photos
+
+study_area:
+  # Confirmed in Stage 1 (must be >= 20 sq km and include both taluks).
+  # First guess only, NOT checked: west 77.44, south 8.66, east 77.58, north 8.74
+  geojson: "data/processed/study_area.geojson"
+  confirmed: false
+
+crs_metric: "EPSG:32643"                    # UTM zone 43N, for areas in hectares
+
+classes: ["paddy", "banana", "other"]
+label_targets: {paddy: 55, banana: 55, other: 45}
+
+paths:
+  ndvi_raster: "data/processed/ndvi_monthly.tif"
+  plots: "data/processed/plots.gpkg"
+  labels_glob: "labels/labels*.csv"
+  labels_all: "labels/all_labels.csv"
+  train: "labels/train.csv"
+  test: "labels/test.csv"
+  probabilities: "data/processed/class_probabilities.tif"
+  plot_results: "data/processed/plot_results.gpkg"
+  reports: "reports"
+
+split:
+  block_size_m: 500
+  test_per_class: 15
+
+seed: 42

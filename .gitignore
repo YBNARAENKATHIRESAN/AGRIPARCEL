@@ -1,0 +1,18 @@
+# Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# Large data stays out of GitHub (it can be re-downloaded)
+data/raw/
+data/interim/
+*.tif
+*.tiff
+*.zarr/
+
+# Local secrets and OS files
+.env
+CLAUDE.local.md
+.DS_Store
+Thumbs.db
